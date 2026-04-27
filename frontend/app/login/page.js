@@ -65,7 +65,8 @@ export default function LoginPage() {
       style={{
         minHeight: "100vh",
         display: "grid",
-        gridTemplateColumns: "1fr 1.1fr",
+        gridTemplateColumns: "1fr 1fr",
+        background: "#f7fafe",
       }}
     >
       <section
@@ -75,9 +76,9 @@ export default function LoginPage() {
           padding: "56px clamp(22px, 5vw, 66px)",
           display: "grid",
           alignItems: "center",
-          borderRight: "1px solid rgba(141, 183, 255, 0.2)",
+          borderRight: "1px solid #dbe7ff",
           background:
-            "radial-gradient(circle at 20% 14%, rgba(78, 150, 255, 0.2), transparent 46%), linear-gradient(150deg, #040810, #0c1b38 68%, #112851)",
+            "radial-gradient(circle at 20% 14%, rgba(78, 150, 255, 0.16), transparent 46%), linear-gradient(150deg, #f8fbff, #eef5ff 68%, #e9f1ff)",
           overflow: "hidden",
         }}
       >
@@ -86,20 +87,20 @@ export default function LoginPage() {
             position: "absolute",
             inset: 0,
             backgroundImage:
-              "linear-gradient(rgba(129, 179, 255, 0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(129, 179, 255, 0.08) 1px, transparent 1px)",
+              "linear-gradient(rgba(129, 179, 255, 0.07) 1px, transparent 1px), linear-gradient(90deg, rgba(129, 179, 255, 0.07) 1px, transparent 1px)",
             backgroundSize: "56px 56px",
-            opacity: 0.4,
+            opacity: 0.5,
             pointerEvents: "none",
           }}
         />
 
         <div style={{ position: "relative", zIndex: 1, maxWidth: 620, width: "100%" }}>
-          <span className="tag">Mission Control Platform</span>
+          <span className="tag">Emergency Access Console</span>
           <h1 className="h1" style={{ marginTop: 18 }}>
             Emergency Command System
           </h1>
-          <p className="muted" style={{ marginTop: 14, maxWidth: 540, fontSize: "1.06rem" }}>
-            AI-Powered Tactical Intelligence Platform
+          <p className="muted" style={{ marginTop: 14, maxWidth: 540, fontSize: "1.06rem", color: "#4d669a" }}>
+            Secure sign-in for responders and command administrators.
           </p>
 
           <div
@@ -116,8 +117,7 @@ export default function LoginPage() {
                     width: 8,
                     height: 8,
                     borderRadius: 999,
-                    background: "#2e84ff",
-                    boxShadow: "0 0 18px rgba(46, 132, 255, 0.85)",
+                    background: "#2d79ff",
                   }}
                 />
                 <span className="muted">{item}</span>
@@ -134,7 +134,7 @@ export default function LoginPage() {
           placeItems: "center",
           padding: "36px clamp(20px, 4vw, 46px)",
           background:
-            "radial-gradient(circle at 78% 20%, rgba(51, 110, 248, 0.18), transparent 42%), linear-gradient(175deg, rgba(7, 11, 22, 0.6), rgba(9, 14, 27, 0.95))",
+            "radial-gradient(circle at 78% 20%, rgba(51, 110, 248, 0.12), transparent 42%), linear-gradient(175deg, #f8fbff, #eef4ff)",
         }}
       >
         <form className="glass-strong" style={{ width: "100%", maxWidth: 470, padding: 30 }} onSubmit={onSubmit}>
@@ -177,7 +177,7 @@ export default function LoginPage() {
           </div>
 
           {error ? (
-            <p style={{ color: "#ff89a2", marginTop: 12, marginBottom: 0, fontSize: "0.88rem" }}>{error}</p>
+            <p style={{ color: "#d84c74", marginTop: 12, marginBottom: 0, fontSize: "0.88rem" }}>{error}</p>
           ) : null}
 
           <button
