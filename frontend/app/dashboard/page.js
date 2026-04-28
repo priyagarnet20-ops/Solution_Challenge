@@ -77,7 +77,7 @@ export default function UserDashboardPage() {
         return;
       }
 
-      setCurrentUser(parsed);
+      queueMicrotask(() => setCurrentUser(parsed));
     } catch {
       router.replace("/login");
     }
@@ -89,7 +89,7 @@ export default function UserDashboardPage() {
     const db = getDb();
 
     if (!hasFirebaseConfig() || !db) {
-      setSubmitError("Firebase is not configured in frontend environment variables.");
+      queueMicrotask(() => setSubmitError("Firebase is not configured in frontend environment variables."));
       return undefined;
     }
 
@@ -108,6 +108,8 @@ export default function UserDashboardPage() {
               id: doc.id,
               description: String(data.description || "No description"),
               status: String(data.status || "pending"),
+              confidenceScore: data.confidence_score ?? null,
+              priorityScore: data.priority_score ?? null,
               createdAt: data.createdAt || null,
             };
           })
@@ -225,9 +227,15 @@ export default function UserDashboardPage() {
         imageUrl: imagePreview || null,
         lat: locationCoords.lat,
         lng: locationCoords.lng,
+        latitude: locationCoords.lat,
+        longitude: locationCoords.lng,
+        incident_type: null,
         status: "pending",
         severity_level: null,
         priority_score: null,
+        confidence_score: null,
+        cluster_id: null,
+        cluster_size: 1,
         triage_category: null,
         image_analysis: null,
         reason: null,
@@ -236,6 +244,7 @@ export default function UserDashboardPage() {
         dispatch_reason: null,
         briefing: null,
         createdAt: serverTimestamp(),
+        created_at: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
 
@@ -582,6 +591,10 @@ export default function UserDashboardPage() {
                     </span>
                   </div>
                   <span className="muted" style={{ fontSize: "0.75rem" }}>{formatTimestamp(entry.createdAt)}</span>
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap", fontSize: "0.72rem", color: "#5d74a6" }}>
+                    <span>Confidence: <strong style={{ color: "#1f356b" }}>{entry.confidenceScore != null ? `${entry.confidenceScore}%` : "Pending"}</strong></span>
+                    <span>Priority: <strong style={{ color: "#1f356b" }}>{entry.priorityScore ?? "Pending"}</strong></span>
+                  </div>
                 </article>
               ))}
 

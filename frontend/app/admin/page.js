@@ -2,13 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { APIProvider, AdvancedMarker, Map, Pin } from "@vis.gl/react-google-maps";
+import { APIProvider, AdvancedMarker, Map as GoogleMap } from "@vis.gl/react-google-maps";
 import {
   collection,
   doc,
   onSnapshot,
   query,
-  serverTimestamp,
   updateDoc,
 } from "firebase/firestore";
 import { getDb, hasFirebaseConfig } from "../../lib/firebase";
@@ -41,15 +40,32 @@ function titleFromType(value) {
 
 function createdAtLabel(value) {
   if (!value) return "Unknown time";
+  if (typeof value?.toDate === "function") {
+    return value.toDate().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return "Unknown time";
   return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+function confidenceColor(value) {
+  const score = Number(value || 0);
+  if (score > 80) return "#10b981";
+  if (score >= 60) return "#f59e0b";
+  return "#ef4444";
+}
+
+function priorityBorder(value) {
+  return Number(value || 0) >= 70 ? "1px solid rgba(239, 68, 68, 0.55)" : "1px solid #e2e8f0";
+}
+
 function toDisplayIncident(raw) {
   const severity = normalizeSeverity(raw?.severity_level || "low");
-  const lat = Number(raw?.lat);
-  const lng = Number(raw?.lng);
+  const lat = Number(raw?.lat ?? raw?.latitude);
+  const lng = Number(raw?.lng ?? raw?.longitude);
+  const priorityScore = raw?.priority_score != null ? Number(raw.priority_score) : null;
+  const confidenceScore = raw?.confidence_score != null ? Number(raw.confidence_score) : null;
+  const clusterSize = raw?.cluster_size != null ? Number(raw.cluster_size) : 1;
   return {
     id: String(raw?.id || ""),
     title: titleFromType(raw?.incident_type || "incident"),
@@ -63,47 +79,18 @@ function toDisplayIncident(raw) {
     createdAt: raw?.createdAt || raw?.created_at || null,
     updatedAt: raw?.updatedAt || raw?.updated_at || null,
     status: String(raw?.status || "pending"),
-    priorityScore: raw?.priority_score ?? null,
+    priorityScore: Number.isFinite(priorityScore) ? priorityScore : null,
     threatGrowth: raw?.threat_growth ?? null,
     prediction: raw?.prediction ?? null,
+    confidenceScore: Number.isFinite(confidenceScore) ? confidenceScore : null,
+    clusterId: String(raw?.cluster_id || ""),
+    clusterSize: Number.isFinite(clusterSize) ? clusterSize : 1,
     dispatchAction: raw?.dispatch_action ?? null,
     dispatchReason: raw?.dispatch_reason ?? null,
     briefing: raw?.briefing ?? null,
-    createdAtRaw: raw?.createdAt || null,
+    createdAtRaw: raw?.createdAt || raw?.created_at || null,
     imageUrl: raw?.imageUrl || null,
     isRead: raw?.read === true,
-  };
-}
-
-function inferIncidentType(text) {
-  const value = String(text || "").toLowerCase();
-  if (value.includes("fire")) return "fire";
-  if (value.includes("flood")) return "flood";
-  if (value.includes("gas")) return "gas_leak";
-  if (value.includes("collapse")) return "building_collapse";
-  if (value.includes("cyclone")) return "cyclone";
-  if (value.includes("hazmat") || value.includes("chemical")) return "hazmat";
-  if (value.includes("injury") || value.includes("medical") || value.includes("ambulance")) return "medical";
-  return "other";
-}
-
-function buildPredictPayload(analysis, incident) {
-  const nowHour = new Date().getHours();
-  const timeOfDay = nowHour < 12 ? "morning" : nowHour < 17 ? "afternoon" : "night";
-  const description = String(incident.details || "").toLowerCase();
-  const peopleTrapped = description.includes("trapped") ? "yes" : "no";
-  const hazardousMaterial =
-    description.includes("chemical") || description.includes("gas") || description.includes("hazmat")
-      ? "yes"
-      : "no";
-  return {
-    incident_type: analysis?.incident_type || inferIncidentType(incident.details),
-    location_type: "urban",
-    time_of_day: timeOfDay,
-    severity_level: String(analysis?.severity_level || "medium").toLowerCase(),
-    people_trapped: peopleTrapped,
-    hazardous_material: hazardousMaterial,
-    resource_availability: "medium",
   };
 }
 
@@ -155,14 +142,16 @@ function SeverityChart({ incidents }) {
   const counts = severityOrder.map((level) => incidents.filter((i) => i.severity === level).length);
   const percentages = counts.map((count) => Math.round((count / total) * 100));
 
-  let current = 0;
   const chartStops = percentages
-    .map((pct, idx) => {
-      const start = current;
-      current += pct;
-      return `${sevColor[severityOrder[idx]]} ${start}% ${current}%`;
-    })
-    .join(", ");
+    .reduce((acc, pct, idx) => {
+      const start = acc.current;
+      const end = start + pct;
+      return {
+        current: end,
+        stops: [...acc.stops, `${sevColor[severityOrder[idx]]} ${start}% ${end}%`],
+      };
+    }, { current: 0, stops: [] })
+    .stops.join(", ");
 
   const chart = `conic-gradient(${chartStops || "#10b981 0 100%"})`;
 
@@ -319,80 +308,57 @@ export default function AdminPage() {
     () => [...incidents].sort((a, b) => (b.threatGrowth || 0) - (a.threatGrowth || 0)).slice(0, 5),
     [incidents]
   );
+  const criticalQueue = useMemo(
+    () => [...incidents].sort((a, b) => (b.priorityScore || 0) - (a.priorityScore || 0)).slice(0, 5),
+    [incidents]
+  );
+  const mapMarkers = useMemo(() => {
+    const groups = new Map();
+    const individuals = [];
+
+    incidents.forEach((incident) => {
+      if (incident.clusterSize > 1 && incident.clusterId && !incident.clusterId.startsWith("single-")) {
+        const group = groups.get(incident.clusterId) || [];
+        group.push(incident);
+        groups.set(incident.clusterId, group);
+      } else {
+        individuals.push(incident);
+      }
+    });
+
+    const clusters = Array.from(groups.entries()).map(([clusterId, group]) => {
+      const sorted = [...group].sort((a, b) => (b.priorityScore || 0) - (a.priorityScore || 0));
+      const count = Math.max(sorted[0]?.clusterSize || group.length, group.length);
+      const lat = group.reduce((sum, item) => sum + item.lat, 0) / group.length;
+      const lng = group.reduce((sum, item) => sum + item.lng, 0) / group.length;
+      return {
+        clusterId,
+        count,
+        lat,
+        lng,
+        incident: sorted[0],
+        severity: sorted[0]?.severity || "Medium",
+      };
+    });
+
+    return { clusters, individuals };
+  }, [incidents]);
 
   async function processIncident(incident) {
-    const db = getDb();
-    if (!incident?.id || !db) return;
-    const incidentRef = doc(db, "incidents", incident.id);
+    if (!incident?.id) return;
     setProcessingIncidentId(incident.id);
     setIncidentsError("");
     try {
-      await updateDoc(incidentRef, { status: "processing", updatedAt: serverTimestamp() });
-      const analyzeRes = await fetch(`${API_URL}/analyze-input`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: incident.details }),
-      });
-      const analyzeData = await analyzeRes.json();
-      if (!analyzeRes.ok) throw new Error(analyzeData?.detail || "Analyze failed");
-
-      const predictPayload = buildPredictPayload(analyzeData, incident);
-      const predictRes = await fetch(`${API_URL}/predict-escalation`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(predictPayload),
-      });
-      const predictData = await predictRes.json();
-      if (!predictRes.ok) throw new Error(predictData?.detail || "Predict escalation failed");
-
-      const dispatchRes = await fetch(`${API_URL}/auto-dispatch`, {
+      const processRes = await fetch(`${API_URL}/process-incident`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          incident: {
-            incident_type: analyzeData.incident_type,
-            severity_level: analyzeData.severity_level,
-            priority_score: analyzeData.priority_score,
-            description: incident.details,
-            lat: incident.lat,
-            lng: incident.lng,
-          },
+          incident_id: incident.id,
           available_resources: ["Fire Engine", "Ambulance", "Police Unit", "Hazmat Team", "Search & Rescue", "Helicopter"],
         }),
       });
-      const dispatchData = await dispatchRes.json();
-      if (!dispatchRes.ok) throw new Error(dispatchData?.detail || "Auto dispatch failed");
-
-      const briefingRes = await fetch(`${API_URL}/generate-briefing`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          incident: {
-            incident_type: analyzeData.incident_type,
-            severity_level: analyzeData.severity_level,
-            priority_score: analyzeData.priority_score,
-            description: incident.details,
-            lat: incident.lat,
-            lng: incident.lng,
-          },
-          prediction: predictData,
-          dispatch: dispatchData,
-        }),
-      });
-      const briefingData = await briefingRes.json();
-      if (!briefingRes.ok) throw new Error(briefingData?.detail || "Generate briefing failed");
-
-      await updateDoc(incidentRef, {
-        severity_level: analyzeData?.severity_level ?? null,
-        priority_score: analyzeData?.priority_score ?? null,
-        threat_growth: predictData?.threat_growth ?? null,
-        prediction: predictData?.prediction ?? null,
-        dispatch_action: dispatchData?.action ?? null,
-        dispatch_reason: dispatchData?.reason ?? null,
-        briefing: briefingData?.briefing ?? null,
-        status: "resolved",
-        updatedAt: serverTimestamp(),
-      });
+      const processData = await processRes.json();
+      if (!processRes.ok) throw new Error(processData?.detail || "Incident processing failed");
       setProcessingErrors((prev) => { const next = { ...prev }; delete next[incident.id]; return next; });
     } catch (ex) {
       setProcessingErrors((prev) => ({ ...prev, [incident.id]: ex.message || "AI processing failed" }));
@@ -576,15 +542,27 @@ export default function AdminPage() {
               <div style={{ borderRadius: 12, overflow: 'hidden', flexGrow: 1, minHeight: 340, background: '#eef2ff' }}>
                 {mapsKey ? (
                   <APIProvider apiKey={mapsKey}>
-                    <Map defaultCenter={{ lat: 12.9716, lng: 77.5946 }} defaultZoom={12} mapId="admin-map" style={{ width: "100%", height: "100%" }} disableDefaultUI={true}>
-                      {incidents.map((incident) => (
+                    <GoogleMap defaultCenter={{ lat: 12.9716, lng: 77.5946 }} defaultZoom={12} mapId="admin-map" style={{ width: "100%", height: "100%" }} disableDefaultUI={true}>
+                      {mapMarkers.clusters.map((cluster) => (
+                        <AdvancedMarker key={cluster.clusterId} position={{ lat: cluster.lat, lng: cluster.lng }} onClick={() => onIncidentClick(cluster.incident)}>
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                            <div style={{ width: 42, height: 42, borderRadius: '50%', background: `${sevColor[cluster.severity]}33`, border: `2px solid ${sevColor[cluster.severity]}`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: sevColor[cluster.severity], fontWeight: 800, fontSize: 13, boxShadow: `0 0 0 6px ${sevColor[cluster.severity]}22` }}>
+                              {cluster.count}
+                            </div>
+                            <div style={{ padding: '3px 8px', borderRadius: 999, background: '#fff', border: '1px solid #e2e8f0', color: '#1e293b', fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap', boxShadow: '0 4px 10px rgba(15, 23, 42, 0.12)' }}>
+                              Cluster ({cluster.count} incidents)
+                            </div>
+                          </div>
+                        </AdvancedMarker>
+                      ))}
+                      {mapMarkers.individuals.map((incident) => (
                         <AdvancedMarker key={incident.id} position={{ lat: incident.lat, lng: incident.lng }} onClick={() => onIncidentClick(incident)}>
-                          <div style={{ width: 24, height: 24, borderRadius: '50%', background: `${sevColor[incident.severity]}44`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <div style={{ width: incident.priorityScore >= 70 ? 30 : 24, height: incident.priorityScore >= 70 ? 30 : 24, borderRadius: '50%', background: `${sevColor[incident.severity]}44`, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: incident.priorityScore >= 70 ? `0 0 0 5px ${sevColor[incident.severity]}22` : 'none' }}>
                             <div style={{ width: 12, height: 12, borderRadius: '50%', background: sevColor[incident.severity], border: '2px solid #fff' }} />
                           </div>
                         </AdvancedMarker>
                       ))}
-                    </Map>
+                    </GoogleMap>
                   </APIProvider>
                 ) : (
                   <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#64748b" }}>Loading Map...</div>
@@ -600,7 +578,7 @@ export default function AdminPage() {
                       <div style={{ width: 10, height: 10, borderRadius: '50%', background: sevColor[inc.severity] || '#3b82f6', marginTop: 4, flexShrink: 0 }} />
                       <div style={{ width: 2, flexGrow: 1, background: '#e2e8f0', margin: '4px 0 -16px 0' }} />
                     </div>
-                    <div style={{ flexGrow: 1, background: '#f8fafc', padding: '12px 16px', borderRadius: 8, cursor: 'pointer' }} onClick={() => onIncidentClick(inc)}>
+                    <div style={{ flexGrow: 1, background: inc.priorityScore >= 70 ? '#fff7f7' : '#f8fafc', padding: '12px 16px', borderRadius: 8, cursor: 'pointer', border: priorityBorder(inc.priorityScore), boxShadow: inc.priorityScore >= 70 ? '0 0 0 3px rgba(239, 68, 68, 0.08)' : 'none' }} onClick={() => onIncidentClick(inc)}>
                       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                         <div style={{ fontSize: 13, fontWeight: 600, color: '#1e293b' }}>{inc.title}</div>
                         <div style={{ fontSize: 12, color: '#64748b' }}>{createdAtLabel(inc.createdAt)}</div>
@@ -693,6 +671,39 @@ export default function AdminPage() {
             </div>
           </Card>
 
+          <Card title={<><svg width="18" height="18" fill="none" stroke="#ef4444" strokeWidth="2"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg> Critical Queue</>}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {criticalQueue.map((inc, i) => (
+                <button
+                  key={inc.id}
+                  type="button"
+                  onClick={() => onIncidentClick(inc)}
+                  style={{
+                    textAlign: 'left',
+                    background: inc.priorityScore >= 70 ? '#fff7f7' : '#fff',
+                    border: priorityBorder(inc.priorityScore),
+                    borderRadius: 8,
+                    padding: '10px 12px',
+                    cursor: 'pointer',
+                    display: 'grid',
+                    gap: 6,
+                    boxShadow: inc.priorityScore >= 70 ? '0 0 0 3px rgba(239, 68, 68, 0.08)' : 'none',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                    <span style={{ fontSize: 12, fontWeight: 800, color: '#64748b' }}>#{i + 1}</span>
+                    <SevBadge value={inc.severity} />
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{inc.title}</span>
+                    <span style={{ fontSize: 18, fontWeight: 800, color: inc.priorityScore >= 70 ? '#ef4444' : '#1e293b' }}>{inc.priorityScore ?? 0}</span>
+                  </div>
+                </button>
+              ))}
+              {!criticalQueue.length && <div style={{ color: "#64748b", fontSize: 14 }}>No queued incidents</div>}
+            </div>
+          </Card>
+
           <Card title={<><svg width="18" height="18" fill="none" stroke="#3b82f6" strokeWidth="2"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/></svg> Severity Distribution</>}>
             <SeverityChart incidents={incidents} />
           </Card>
@@ -714,7 +725,7 @@ export default function AdminPage() {
           <Card title="Active Alerts" extra={<div style={{ fontSize: 12, color: '#3b82f6', fontWeight: 600, cursor: 'pointer' }}>View All</div>}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               {incidents.filter(i => i.severity === 'High' || i.severity === 'Critical').slice(0, 3).map((inc) => (
-                <div key={inc.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', border: '1px solid #e2e8f0', borderRadius: 8, cursor: 'pointer' }} onClick={() => onIncidentClick(inc)}>
+                <div key={inc.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', border: priorityBorder(inc.priorityScore), borderRadius: 8, cursor: 'pointer', background: inc.priorityScore >= 70 ? '#fff7f7' : '#fff', boxShadow: inc.priorityScore >= 70 ? '0 0 0 3px rgba(239, 68, 68, 0.08)' : 'none' }} onClick={() => onIncidentClick(inc)}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                     <div style={{ color: '#f59e0b' }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
                     <div style={{ fontSize: 13, fontWeight: 600, color: '#1e293b', maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{inc.title}</div>
@@ -795,7 +806,25 @@ export default function AdminPage() {
               <span style={{ fontSize: "0.76rem", color: "#7287af" }}>
                 Escalation: <strong style={{ color: "#ff9f3d" }}>{modalIncident.threatGrowth ?? 0}%</strong>
               </span>
+              <span style={{ fontSize: "0.76rem", color: "#7287af" }}>
+                Priority: <strong style={{ color: modalIncident.priorityScore >= 70 ? "#ef4444" : "#2d5da4" }}>{modalIncident.priorityScore ?? "-"}</strong>
+              </span>
+              <span style={{ fontSize: "0.76rem", color: "#7287af", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                Confidence:
+                <span style={{ width: 7, height: 7, borderRadius: "50%", background: confidenceColor(modalIncident.confidenceScore) }} />
+                <strong style={{ color: confidenceColor(modalIncident.confidenceScore) }}>
+                  {modalIncident.confidenceScore != null ? `${modalIncident.confidenceScore}%` : "-"}
+                </strong>
+              </span>
             </div>
+
+            <article className="glass" style={{ padding: "10px 12px", borderRadius: 10 }}>
+              <p className="panel-title" style={{ margin: "0 0 8px", fontSize: "0.65rem", letterSpacing: "0.08em" }}>CLUSTER STATUS</p>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: "0.78rem" }}>
+                <span style={{ color: "#5f75a4" }}>Part of Cluster: <strong style={{ color: "#2e4f8c" }}>{modalIncident.clusterSize > 1 ? "Yes" : "No"}</strong></span>
+                <span style={{ color: "#5f75a4" }}>Cluster Size: <strong style={{ color: "#2e4f8c" }}>{modalIncident.clusterSize || 1} incidents</strong></span>
+              </div>
+            </article>
 
             {/* Description */}
             <article className="glass" style={{ padding: "10px 12px", borderRadius: 10 }}>
@@ -863,12 +892,14 @@ export default function AdminPage() {
               <p className="panel-title" style={{ margin: "0 0 8px", fontSize: "0.65rem", letterSpacing: "0.08em" }}>AI TACTICAL OUTPUT</p>
               <div style={{ display: "grid", gap: 5, fontSize: "0.78rem", color: "#5f75a4" }}>
                 {[
-                  ["Priority", modalIncident.priorityScore ?? "—"],
-                  ["Threat", modalIncident.threatGrowth != null ? `${modalIncident.threatGrowth}%` : "—"],
-                  ["Prediction", modalIncident.prediction || "—"],
-                  ["Dispatch", modalIncident.dispatchAction || "—"],
-                  ["Reason", modalIncident.dispatchReason || "—"],
-                  ["Briefing", modalIncident.briefing || "—"],
+                  ["Priority", modalIncident.priorityScore ?? "-"],
+                  ["Threat", modalIncident.threatGrowth != null ? `${modalIncident.threatGrowth}%` : "-"],
+                  ["Confidence", modalIncident.confidenceScore != null ? `${modalIncident.confidenceScore}%` : "-"],
+                  ["Cluster", modalIncident.clusterSize > 1 ? `${modalIncident.clusterSize} incidents` : "No"],
+                  ["Prediction", modalIncident.prediction || "-"],
+                  ["Dispatch", modalIncident.dispatchAction || "-"],
+                  ["Reason", modalIncident.dispatchReason || "-"],
+                  ["Briefing", modalIncident.briefing || "-"],
                 ].map(([label, val]) => (
                   <div key={label} style={{ display: "grid", gridTemplateColumns: "90px 1fr", gap: 8 }}>
                     <span style={{ color: "#7a8eb5", fontSize: "0.72rem" }}>{label}</span>
