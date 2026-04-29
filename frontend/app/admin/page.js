@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { APIProvider, AdvancedMarker, Map as GoogleMap } from "@vis.gl/react-google-maps";
+import dynamic from "next/dynamic";
 import {
   collection,
   doc,
@@ -11,6 +11,13 @@ import {
   updateDoc,
 } from "firebase/firestore";
 import { getDb, hasFirebaseConfig } from "../../lib/firebase";
+
+/**
+ * Dynamically import the Google Maps view with SSR disabled.
+ * This prevents the @vis.gl/react-google-maps library from executing
+ * during server-side rendering where DOM APIs (e.g. getRootNode) are unavailable.
+ */
+const DynamicMapView = dynamic(() => import("./MapView"), { ssr: false });
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -540,33 +547,12 @@ export default function AdminPage() {
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.6fr) minmax(0, 1fr)', gap: 24 }}>
             <Card title={<><svg width="18" height="18" fill="none" stroke="#3b82f6" strokeWidth="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg> Incident Visualization</>} subtitle="Live" style={{ display: 'flex', flexDirection: 'column' }}>
               <div style={{ borderRadius: 12, overflow: 'hidden', flexGrow: 1, minHeight: 340, background: '#eef2ff' }}>
-                {mapsKey ? (
-                  <APIProvider apiKey={mapsKey}>
-                    <GoogleMap defaultCenter={{ lat: 12.9716, lng: 77.5946 }} defaultZoom={12} mapId="admin-map" style={{ width: "100%", height: "100%" }} disableDefaultUI={true}>
-                      {mapMarkers.clusters.map((cluster) => (
-                        <AdvancedMarker key={cluster.clusterId} position={{ lat: cluster.lat, lng: cluster.lng }} onClick={() => onIncidentClick(cluster.incident)}>
-                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-                            <div style={{ width: 42, height: 42, borderRadius: '50%', background: `${sevColor[cluster.severity]}33`, border: `2px solid ${sevColor[cluster.severity]}`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: sevColor[cluster.severity], fontWeight: 800, fontSize: 13, boxShadow: `0 0 0 6px ${sevColor[cluster.severity]}22` }}>
-                              {cluster.count}
-                            </div>
-                            <div style={{ padding: '3px 8px', borderRadius: 999, background: '#fff', border: '1px solid #e2e8f0', color: '#1e293b', fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap', boxShadow: '0 4px 10px rgba(15, 23, 42, 0.12)' }}>
-                              Cluster ({cluster.count} incidents)
-                            </div>
-                          </div>
-                        </AdvancedMarker>
-                      ))}
-                      {mapMarkers.individuals.map((incident) => (
-                        <AdvancedMarker key={incident.id} position={{ lat: incident.lat, lng: incident.lng }} onClick={() => onIncidentClick(incident)}>
-                          <div style={{ width: incident.priorityScore >= 70 ? 30 : 24, height: incident.priorityScore >= 70 ? 30 : 24, borderRadius: '50%', background: `${sevColor[incident.severity]}44`, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: incident.priorityScore >= 70 ? `0 0 0 5px ${sevColor[incident.severity]}22` : 'none' }}>
-                            <div style={{ width: 12, height: 12, borderRadius: '50%', background: sevColor[incident.severity], border: '2px solid #fff' }} />
-                          </div>
-                        </AdvancedMarker>
-                      ))}
-                    </GoogleMap>
-                  </APIProvider>
-                ) : (
-                  <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#64748b" }}>Loading Map...</div>
-                )}
+                <DynamicMapView
+                  mapsKey={mapsKey}
+                  mapsError={mapsError}
+                  mapMarkers={mapMarkers}
+                  onIncidentClick={onIncidentClick}
+                />
               </div>
             </Card>
 
