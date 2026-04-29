@@ -61,7 +61,8 @@ export default function MapView({ mapsKey, mapsError, mapMarkers, onIncidentClic
         defaultCenter={{ lat: 12.9716, lng: 77.5946 }}
         defaultZoom={12}
         mapId="DEMO_MAP_ID"
-        style={{ width: "100%", height: "100%" }}
+        // CHANGE THIS LINE: Force a pixel height instead of 100%
+        style={{ width: "100%", height: "600px", minHeight: "500px", borderRadius: "12px" }}
         disableDefaultUI={true}
       >
         {/* Cluster markers — only render if the map instance is ready */}
