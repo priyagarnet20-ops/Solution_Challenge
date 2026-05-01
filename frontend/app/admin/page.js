@@ -66,19 +66,31 @@ function priorityBorder(value) {
   return Number(value || 0) >= 70 ? "1px solid rgba(239, 68, 68, 0.55)" : "1px solid #e2e8f0";
 }
 
+function isValidLatLng(lat, lng) {
+  return (
+    Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    lat >= -90 &&
+    lat <= 90 &&
+    lng >= -180 &&
+    lng <= 180
+  );
+}
+
 function toDisplayIncident(raw) {
   const severity = normalizeSeverity(raw?.severity_level || "low");
-  const lat = Number(raw?.lat ?? raw?.latitude);
-  const lng = Number(raw?.lng ?? raw?.longitude);
+  const lat = Number(raw?.lat ?? raw?.latitude ?? raw?.location?.latitude);
+  const lng = Number(raw?.lng ?? raw?.longitude ?? raw?.location?.longitude);
   const priorityScore = raw?.priority_score != null ? Number(raw.priority_score) : null;
   const confidenceScore = raw?.confidence_score != null ? Number(raw.confidence_score) : null;
   const clusterSize = raw?.cluster_size != null ? Number(raw.cluster_size) : 1;
+  const hasValidPosition = isValidLatLng(lat, lng);
   return {
     id: String(raw?.id || ""),
     title: titleFromType(raw?.incident_type || "incident"),
     incidentType: String(raw?.incident_type || "other"),
     userId: String(raw?.userId || ""),
-    location: `${Number.isFinite(lat) ? lat.toFixed(4) : "--"}, ${Number.isFinite(lng) ? lng.toFixed(4) : "--"}`,
+    location: hasValidPosition ? `${lat.toFixed(4)}, ${lng.toFixed(4)}` : "--, --",
     severity,
     lat,
     lng,
@@ -281,7 +293,7 @@ export default function AdminPage() {
             const data = incidentDoc.data() || {};
             return toDisplayIncident({ id: incidentDoc.id, ...data });
           })
-          .filter((item) => Number.isFinite(item.lat) && Number.isFinite(item.lng))
+          .filter((item) => isValidLatLng(item.lat, item.lng))
           .sort((a, b) => {
             const at = typeof a.createdAtRaw?.toMillis === "function" ? a.createdAtRaw.toMillis() : 0;
             const bt = typeof b.createdAtRaw?.toMillis === "function" ? b.createdAtRaw.toMillis() : 0;
@@ -333,20 +345,28 @@ export default function AdminPage() {
       }
     });
 
-    const clusters = Array.from(groups.entries()).map(([clusterId, group]) => {
-      const sorted = [...group].sort((a, b) => (b.priorityScore || 0) - (a.priorityScore || 0));
-      const count = Math.max(sorted[0]?.clusterSize || group.length, group.length);
-      const lat = group.reduce((sum, item) => sum + item.lat, 0) / group.length;
-      const lng = group.reduce((sum, item) => sum + item.lng, 0) / group.length;
-      return {
-        clusterId,
-        count,
-        lat,
-        lng,
-        incident: sorted[0],
-        severity: sorted[0]?.severity || "Medium",
-      };
-    });
+    const clusters = Array.from(groups.entries())
+      .map(([clusterId, group]) => {
+        const validGroup = group.filter((item) => isValidLatLng(item.lat, item.lng));
+        if (!validGroup.length) return null;
+
+        const sorted = [...validGroup].sort((a, b) => (b.priorityScore || 0) - (a.priorityScore || 0));
+        const count = Math.max(sorted[0]?.clusterSize || validGroup.length, validGroup.length);
+        const lat = validGroup.reduce((sum, item) => sum + item.lat, 0) / validGroup.length;
+        const lng = validGroup.reduce((sum, item) => sum + item.lng, 0) / validGroup.length;
+
+        if (!isValidLatLng(lat, lng)) return null;
+
+        return {
+          clusterId,
+          count,
+          lat,
+          lng,
+          incident: sorted[0],
+          severity: sorted[0]?.severity || "Medium",
+        };
+      })
+      .filter(Boolean);
 
     return { clusters, individuals };
   }, [incidents]);

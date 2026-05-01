@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { APIProvider, AdvancedMarker, Map as GoogleMap } from "@vis.gl/react-google-maps";
 
 const sevColor = {
@@ -9,6 +9,26 @@ const sevColor = {
   High: "#ef4444",
   Critical: "#3b82f6",
 };
+
+const googleMapsLibraries = ["marker"];
+
+function toValidPosition(item) {
+  const lat = Number(item?.lat);
+  const lng = Number(item?.lng);
+
+  if (
+    !Number.isFinite(lat) ||
+    !Number.isFinite(lng) ||
+    lat < -90 ||
+    lat > 90 ||
+    lng < -180 ||
+    lng > 180
+  ) {
+    return null;
+  }
+
+  return { lat, lng };
+}
 
 /**
  * MapView — Client-only Google Maps component.
@@ -21,11 +41,28 @@ const sevColor = {
  */
 export default function MapView({ mapsKey, mapsError, mapMarkers, onIncidentClick }) {
   const [mounted, setMounted] = useState(false);
+  const safeMarkers = useMemo(() => {
+    const clusters = (mapMarkers?.clusters || [])
+      .map((cluster) => {
+        const position = toValidPosition(cluster);
+        return position ? { ...cluster, position } : null;
+      })
+      .filter(Boolean);
+
+    const individuals = (mapMarkers?.individuals || [])
+      .map((incident) => {
+        const position = toValidPosition(incident);
+        return position ? { ...incident, position } : null;
+      })
+      .filter(Boolean);
+
+    return { clusters, individuals };
+  }, [mapMarkers]);
 
   // Ensure we only render the map after the component has mounted in the browser
   useEffect(() => {
-    setMounted(true);
-    return () => setMounted(false);
+    const frameId = window.requestAnimationFrame(() => setMounted(true));
+    return () => window.cancelAnimationFrame(frameId);
   }, []);
 
   // Guard: don't render anything until client-side mount is confirmed
@@ -56,7 +93,7 @@ export default function MapView({ mapsKey, mapsError, mapMarkers, onIncidentClic
   }
 
   return (
-    <APIProvider apiKey={mapsKey}>
+    <APIProvider apiKey={mapsKey} libraries={googleMapsLibraries}>
       <GoogleMap
         defaultCenter={{ lat: 12.9716, lng: 77.5946 }}
         defaultZoom={12}
@@ -66,10 +103,10 @@ export default function MapView({ mapsKey, mapsError, mapMarkers, onIncidentClic
         disableDefaultUI={true}
       >
         {/* Cluster markers — only render if the map instance is ready */}
-        {mapMarkers?.clusters?.map((cluster) => (
+        {safeMarkers.clusters.map((cluster) => (
           <AdvancedMarker
             key={cluster.clusterId}
-            position={{ lat: cluster.lat, lng: cluster.lng }}
+            position={cluster.position}
             onClick={() => onIncidentClick?.(cluster.incident)}
           >
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
@@ -111,10 +148,10 @@ export default function MapView({ mapsKey, mapsError, mapMarkers, onIncidentClic
         ))}
 
         {/* Individual markers */}
-        {mapMarkers?.individuals?.map((incident) => (
+        {safeMarkers.individuals.map((incident) => (
           <AdvancedMarker
             key={incident.id}
-            position={{ lat: incident.lat, lng: incident.lng }}
+            position={incident.position}
             onClick={() => onIncidentClick?.(incident)}
           >
             <div
